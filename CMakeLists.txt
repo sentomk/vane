@@ -10,18 +10,18 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# vane is a Linux-native tool. Reject other platforms early with a clear
-# message rather than failing later on missing fork(), waitpid(), etc.
+# vane is a Linux-native tool. Reject other platforms early rather than
+# failing later on missing fork()/waitpid(). See docs/platform-support.md.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR
-    "vane targets Linux only (Tier 1 platform). "
-    "See docs/platform-support.md. WSL2 satisfies this requirement.")
+    "vane targets Linux only (Tier 1 platform). WSL2 satisfies this.")
 endif()
 
-# LLVM/Clang libraries. On Debian these live under /usr/lib/llvm-<v>/lib/cmake.
-find_package(LLVM 17 REQUIRED CONFIG)
+# LLVM 19 pin: the fork-checkpoint mechanism relies on clang::Interpreter,
+# which is an internal REPL-oriented API that shifts across LLVM versions.
+# The validated spike environment (see spikes/README.md) is LLVM 19.
+find_package(LLVM 19 REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
-
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
 message(STATUS "Found Clang at ${Clang_DIR}")
 
@@ -40,37 +40,26 @@ if(GIT_FOUND)
   endif()
 endif()
 
-add_executable(vane
-  src/main.cpp
-)
+# Shared compile options for anything linking libclang/libLLVM.
+function(vane_apply_clang_targets tgt)
+  target_include_directories(${tgt} PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CLANG_INCLUDE_DIRS}
+  )
+  target_compile_definitions(${tgt} PRIVATE ${LLVM_DEFINITIONS})
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  endif()
+endfunction()
 
-target_include_directories(vane PRIVATE
-  ${CMAKE_SOURCE_DIR}/src
-  ${LLVM_INCLUDE_DIRS}
-  ${CLANG_INCLUDE_DIRS}
-)
+# ── vane main executable ────────────────────────────────────────────────────
+add_executable(vane src/main.cpp)
+vane_apply_clang_targets(vane)
+target_compile_definitions(vane PRIVATE VANE_VERSION="${VANE_VERSION}")
+target_link_libraries(vane PRIVATE clang-cpp LLVM)
 
-target_compile_definitions(vane PRIVATE
-  VANE_VERSION="${VANE_VERSION}"
-  ${LLVM_DEFINITIONS}
-)
-
-# libTooling / Frontend surface. Kept minimal for the skeleton — expand as
-# the fork-checkpoint executor lands.
-target_link_libraries(vane PRIVATE
-  clangTooling
-  clangFrontend
-  clangDriver
-  clangSerialization
-  clangParse
-  clangSema
-  clangAnalysis
-  clangEdit
-  clangAST
-  clangLex
-  clangBasic
-)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  target_compile_options(vane PRIVATE -Wall -Wextra -Wno-unused-parameter)
+# ── Spikes (validation experiments, opt-out via -DVANE_BUILD_SPIKES=OFF) ────
+option(VANE_BUILD_SPIKES "Build the validation spikes" ON)
+if(VANE_BUILD_SPIKES)
+  add_subdirectory(spikes)
 endif()
