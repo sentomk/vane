@@ -11,9 +11,15 @@ on Linux copy-on-write to share the already-parsed Clang/AST state.
 | `001-clang-interpreter-fork` | Does fork() after Parse()+Execute() (JIT) survive without crashing/deadlocking? | VALIDATED (toy scale) |
 | `002-fork-codegen-object` | Does the same mechanism produce real, linkable `.o` files equivalent to independent compiles? | VALIDATED — byte-identical disassembly vs. independent compiles |
 | `003-fork-large-prefix` | Does it still hold and still pay off with a realistic large prefix (`bits/stdc++.h`)? | VALIDATED — ~4x faster than `-j2` baseline, ~6x vs `-j1`, behavior-equivalent output |
+| `004-vane-vs-pch` | With a synthetic prefix, does vane's fork-COW actually beat **PCH** (the real competitor), not just no-cache builds? | VALIDATED (conditionally) — ~43% faster than PCH at `-j32`, verified byte-equivalent symbols + identical program output. Caveats: `-O0` only, synthetic prefix-heavy fixture. |
 
 See each spike's own `README.md` for exact build commands and real
 command output.
+
+Spikes 001-003 were run on a 2 vCPU VPS (see below). Spike 004 was run on
+a 32-core / 15 GB WSL2 Debian box with clang/LLVM 19.1.7, where
+`libclang-cpp.so` *does* ship an unversioned symlink, so it links with
+plain `-lclang-cpp -lLLVM`.
 
 ## Environment used
 - Debian 12 VPS, 2 vCPU / 4GB RAM

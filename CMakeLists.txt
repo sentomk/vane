@@ -20,8 +20,17 @@ endif()
 # LLVM 19 pin: the fork-checkpoint mechanism relies on clang::Interpreter,
 # which is an internal REPL-oriented API that shifts across LLVM versions.
 # The validated spike environment (see spikes/README.md) is LLVM 19.
-find_package(LLVM 19 REQUIRED CONFIG)
+# Pass -DLLVM_DIR / -DClang_DIR to select the right install (systems with
+# multiple LLVMs — e.g. an msys64 LLVM 20 on the PATH — otherwise confuse
+# find_package's version matching). We validate the major version below.
+find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
+if(NOT LLVM_VERSION_MAJOR EQUAL 19)
+  message(FATAL_ERROR
+    "vane requires LLVM 19 (found ${LLVM_PACKAGE_VERSION}). "
+    "Pass -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm "
+    "-DClang_DIR=/usr/lib/llvm-19/lib/cmake/clang.")
+endif()
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
 message(STATUS "Found Clang at ${Clang_DIR}")
 
