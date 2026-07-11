@@ -26,6 +26,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/OptimizationLevel.h"
 
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -58,6 +60,38 @@ static long rssKB() {
   struct rusage ru; getrusage(RUSAGE_SELF, &ru); return ru.ru_maxrss;
 }
 
+// Global optimization level (0, 1, 2, 3), set from argv. Affects both the
+// Interpreter's compiler args and the IR optimization pipeline in emitObj,
+// so vane's output is comparable to `clang -O<n>` rather than always -O0.
+static int gOptLevel = 0;
+
+// Run the standard new-PM optimization pipeline at the chosen level, so the
+// module is optimized the same way clang -O<n> would optimize it before
+// codegen. At -O0 this is a no-op pipeline (matching clang -O0).
+static void optimizeModule(llvm::Module &m, llvm::TargetMachine *tm) {
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cgam;
+  llvm::ModuleAnalysisManager mam;
+  llvm::PassBuilder pb(tm);
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cgam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+  llvm::ModulePassManager mpm;
+  if (gOptLevel == 0) {
+    mpm = pb.buildO0DefaultPipeline(llvm::OptimizationLevel::O0);
+  } else {
+    llvm::OptimizationLevel lvl = gOptLevel == 1 ? llvm::OptimizationLevel::O1
+                                : gOptLevel == 2 ? llvm::OptimizationLevel::O2
+                                                 : llvm::OptimizationLevel::O3;
+    mpm = pb.buildPerModuleDefaultPipeline(lvl);
+  }
+  mpm.run(m, mam);
+}
+
 static bool emitObj(llvm::Module &m, const std::string &path) {
   auto triple = llvm::sys::getDefaultTargetTriple();
   m.setTargetTriple(triple);
@@ -69,6 +103,8 @@ static bool emitObj(llvm::Module &m, const std::string &path) {
       t->createTargetMachine(triple, "generic", "", opts,
                              std::optional<Reloc::Model>(Reloc::PIC_)));
   m.setDataLayout(tm->createDataLayout());
+  // Middle-end optimization, then backend codegen — mirrors clang -O<n>.
+  optimizeModule(m, tm.get());
   std::error_code ec;
   llvm::raw_fd_ostream dst(path, ec, llvm::sys::fs::OF_None);
   if (ec) { std::cerr << "open " << path << ": " << ec.message() << "\n"; return false; }
@@ -82,7 +118,9 @@ static bool emitObj(llvm::Module &m, const std::string &path) {
 
 static std::unique_ptr<clang::Interpreter> makeInterp(const std::string &incDir) {
   clang::IncrementalCompilerBuilder b;
-  std::vector<const char *> args = {"-std=c++20", "-I", incDir.c_str(), "-O0"};
+  std::string optFlag = "-O" + std::to_string(gOptLevel);
+  std::vector<const char *> args = {"-std=c++20", "-I", incDir.c_str(),
+                                    optFlag.c_str()};
   b.SetCompilerArgs(args);
   auto ci = take(b.CreateCpp(), "CreateCpp");
   return take(clang::Interpreter::create(std::move(ci)), "Interpreter::create");
@@ -121,6 +159,14 @@ int main(int argc, char **argv) {
     for (int i = 4; i < argc; ++i) tus.push_back(argv[i]);
   }
   if (tus.empty()) { std::cerr << "no TUs given\n"; return 1; }
+
+  // Optimization level via VANE_OPT env var (0-3, default 0). Env rather than
+  // a positional arg keeps the CLI backward-compatible with the -O0 runs.
+  if (const char *o = std::getenv("VANE_OPT")) {
+    gOptLevel = std::atoi(o);
+    if (gOptLevel < 0 || gOptLevel > 3) gOptLevel = 0;
+  }
+  std::cout << "opt_level=" << gOptLevel << "\n";
 
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();

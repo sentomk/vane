@@ -52,6 +52,33 @@ Five-run spread was tight (baseline 2411-2502, PCH 2029-2158, vane
 
 **vane is ~43% faster than PCH on this workload.**
 
+### -O2 (the important caveat, now closed)
+
+The first result was `-O0`. The worry was that under `-O2`, per-TU
+codegen (not shared) grows and dilutes vane's prefix-sharing win. It
+does not, on this workload:
+
+```
+=== SUMMARY -O2 (median ms, -j32 / pool=32) ===
+  baseline: 2712
+  PCH:      2162   (-20.3% vs baseline)
+  vane:     1170   (-56.9% vs baseline, -45.9% vs PCH)
+```
+
+vane's edge over PCH is **45.9% at -O2**, essentially unchanged from
+-O0's 43.5%. The reason: this fixture's cost is dominated by front-end
+parse + template instantiation (`common.h`'s deep recursion), which is
+exactly what vane shares. `-O2`'s middle-end work is a small fraction of
+total time here, so optimizing it changes little.
+
+To reproduce -O2: `VANE_OPT` env var drives the Interpreter's `-O` level
+and the IR optimization pipeline in `emitObj` (new-PM
+`buildPerModuleDefaultPipeline`), so vane's output is comparable to
+`clang -O2`, not always -O0. Correctness re-verified at -O2
+(`scripts/verify_opt.sh 2`): symbol sets identical (1 strong symbol per
+TU after inlining collapses the weak template symbols), link + run
+match.
+
 ## Why vane wins in the parallel case
 
 Two PCH bottlenecks that vane doesn't have:
@@ -85,17 +112,20 @@ Not just "it ran". Verified three ways (`spike004_verify.sh`):
 
 1. **Synthetic, prefix-heavy fixture.** The shared headers dominate each
    TU's cost; TU-unique code is tiny. Real projects have a lower
-   prefix-to-total ratio, which narrows vane's edge.
-2. **`-O0` only.** No optimized build tested. Under `-O2`, codegen (which
-   is per-TU and not shared) grows as a fraction of total time, shrinking
-   the relative value of prefix sharing. **This is the most important
-   untested dimension.**
+   prefix-to-total ratio, which narrows vane's edge. **Still the biggest
+   open question** — needs a large real project.
+2. ~~`-O0` only.~~ **Closed:** re-run at `-O2`, vane still beats PCH by
+   ~46% (see above). The front-end-dominated cost profile means
+   optimization level barely moves the result on this fixture.
 3. **N=42 on 32 cores.** N barely exceeds core count. The scaling trend
    (larger N/core ratio) is untested and would change both PCH and vane.
 4. **Single prefix / single flag class.** All TUs share one prefix. Real
    projects have multiple flag-equivalence classes and multiple prefixes,
    introducing vane grouping overhead not measured here.
-5. **No `-g`.** Debug info materially changes codegen and `.o` size.
+5. **No `-g`.** Debug info is not tested and is a **known gap**: the spike
+   does not inject `-g` into the Interpreter args, nor configure DWARF
+   emission. Debug builds are the common dev case, so this must be
+   addressed before any general claim. Not faked as a passing test.
 
 ## Verdict
 
@@ -105,10 +135,10 @@ byte-equivalent output. The core premise of the project — that
 fork-COW sharing is materially better than PCH's serialize/deserialize —
 holds on this workload.
 
-The caveats (esp. `-O2` and prefix-to-total ratio) must be closed before
-claiming a general result. Next: re-run at `-O2` and `-g`, and on a
-larger real project, before the headline number goes in the top-level
-README.
+The caveats (esp. prefix-to-total ratio on a real project) must be
+closed before claiming a general result. `-O2` is now closed (vane still
+wins ~46%). Next: `-g` support, larger N, and a real project (fmt /
+abseil) before the headline number goes in the top-level README.
 
 ## Aside: why not auto-discover the prefix (the LevelDB finding)
 
